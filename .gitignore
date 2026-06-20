@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Pipeline output — JSON files produced by video_stats.py (contain raw API data,
+# change every run, and don't belong in version control)
+data/
