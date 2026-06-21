@@ -1,16 +1,13 @@
 import requests
 import json
 import os
-from dotenv import load_dotenv
 from datetime import date
-from airflow.decorators import dag, task
-
-load_dotenv(dotenv_path=".env")  # Load environment variables from .env file
+from airflow.decorators import task
+from airflow.models import Variable
 
 # --- Configuration ---
-api_key = os.getenv("API_KEY")
-channel_handle = os.getenv("CHANNEL_HANDLE")
 max_results = 50  # YouTube API maximum items returned per page
+
 
 @task
 def get_playlist_id():
@@ -29,6 +26,9 @@ def get_playlist_id():
         KeyError / IndexError: If the API response doesn't have the expected shape.
         requests.exceptions.RequestException: If the HTTP call fails.
     """
+    api_key = Variable.get("API_KEY")
+    channel_handle = Variable.get("CHANNEL_HANDLE")
+
     try:
         url = (
             f"https://youtube.googleapis.com/youtube/v3/channels"
@@ -50,6 +50,7 @@ def get_playlist_id():
         print(f"HTTP request failed: {e}")
         raise
 
+
 @task
 def get_video_ids(playlist_id):
     """
@@ -69,6 +70,7 @@ def get_video_ids(playlist_id):
     Raises:
         requests.exceptions.RequestException: If any HTTP call fails.
     """
+    api_key = Variable.get("API_KEY")
     video_ids = []
     page_token = None
     base_url = (
@@ -102,7 +104,7 @@ def get_video_ids(playlist_id):
         print(f"HTTP request failed: {e}")
         raise
 
-@task
+
 def _batch(items, batch_size):
     """
     Split a list into chunks of at most `batch_size` items.
@@ -120,6 +122,7 @@ def _batch(items, batch_size):
     """
     for i in range(0, len(items), batch_size):
         yield items[i:i + batch_size]
+
 
 @task
 def extract_video_data(video_ids):
@@ -141,6 +144,7 @@ def extract_video_data(video_ids):
     Raises:
         requests.exceptions.RequestException: If any HTTP call fails.
     """
+    api_key = Variable.get("API_KEY")
     extracted_data = []
 
     try:
@@ -178,34 +182,29 @@ def extract_video_data(video_ids):
         print(f"HTTP request failed: {e}")
         raise
 
+
 @task
 def save_to_json(data, filename=None):
     """
-    Write video data to a JSON file inside the ./data/ directory.
+    Write video data to a JSON file inside the /opt/airflow/data directory.
 
     The filename includes today's date so each daily run produces a new file
-    rather than overwriting the previous one. The ./data/ directory is created
+    rather than overwriting the previous one. The directory is created
     automatically if it doesn't exist yet.
 
     Args:
         data (list[dict]): The video records returned by extract_video_data().
         filename (str | None): Override the auto-generated filename. Optional.
     """
-    os.makedirs("./data", exist_ok=True)
+    data_dir = "/opt/airflow/data"
+    os.makedirs(data_dir, exist_ok=True)
 
     if filename is None:
         filename = f"youtube_data_{date.today()}.json"
 
-    file_path = f"./data/{filename}"
+    file_path = f"{data_dir}/{filename}"
 
     with open(file_path, 'w', encoding='utf-8') as json_outfile:
         json.dump(data, json_outfile, indent=4, ensure_ascii=False)
 
     print(f"Saved {len(data)} records to {file_path}")
-
-
-if __name__ == "__main__":
-    playlist_id = get_playlist_id()
-    video_ids = get_video_ids(playlist_id)
-    video_data = extract_video_data(video_ids)
-    save_to_json(video_data)
