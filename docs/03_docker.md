@@ -1,299 +1,335 @@
 # Section 3: Docker
 
-## Why Docker?
+## The problem Docker solves
 
-Picture this: you write code on your Windows laptop. It works perfectly. You send it to a teammate on Mac — it crashes. You deploy it to a Linux server — it crashes again. The error is always something like "wrong Python version", "missing library", or "environment variable not set".
+Before we look at any Docker commands or files, let's understand *why* Docker exists. Because if you don't understand the problem, the solution won't make sense.
 
-**Docker solves this.** It packages your code *together with everything it needs to run* — the OS layer, Python version, libraries, config — into one self-contained unit. That unit runs identically on any machine.
+Imagine you write your pipeline on your Windows laptop. Everything works. You then try to run it on a colleague's Mac — it crashes. Wrong Python version. You fix that, try again — missing library. You fix that, try again — environment variable not found. This is the classic *"works on my machine"* problem, and it's been a nightmare in software for decades.
 
-In this project, Docker is what lets you run **Airflow** and **PostgreSQL** on your Windows laptop without installing them directly — they run inside containers.
+The root cause is that your code doesn't run in isolation — it depends on the operating system, the Python version, the installed libraries, the environment variables, and dozens of other things that differ between machines.
+
+**Docker's solution** is to package your code *together with everything it needs* into one self-contained unit. That unit — called a **container** — runs identically on any machine that has Docker installed. Windows, Mac, Linux — it doesn't matter. The container brings its own environment with it.
+
+For this project specifically, Docker lets you run **Airflow** and **PostgreSQL** on your Windows laptop without installing either of them directly. They run inside containers, completely isolated from the rest of your system.
 
 ---
 
-## The Three Core Concepts
+## Three concepts you need to understand before anything else
 
-### 1. Image — the blueprint
+### Image — the blueprint
 
-An image is a read-only snapshot of an environment. Think of it like a recipe or a class in Python — it defines what something looks like but isn't running yet.
+An image is a snapshot of a complete environment, frozen in time. It contains the operating system layer, the runtime (like Python), the libraries, the config — everything. It's read-only, meaning it never changes once built.
 
-```
-Python 3.10 image  →  add your requirements.txt  →  your custom image
-```
+You can think of an image the same way you think of a class in Python. A class *defines* what an object looks like, but isn't actually running. An image defines what a container looks like, but isn't running either.
 
 Images are built from a file called a **Dockerfile**.
 
-### 2. Container — the running instance
+### Container — the running instance
 
-A container is what you get when you *run* an image. Like creating an object from a class in Python. You can run the same image many times to get many containers, each isolated from the others.
+A container is what you get when you *run* an image. Just like creating an object from a class in Python. The image is the blueprint; the container is the live thing.
+
+You can run the same image multiple times and get multiple containers, each completely isolated from the others — separate filesystem, separate network, separate memory.
 
 ```
-Image  →  docker run  →  Container (running, has its own filesystem, network, memory)
+Image  →  docker run  →  Container (live, running, isolated)
 ```
 
-### 3. Volume — persistent storage
+Containers are **throwaway by default**. When you stop and delete a container, everything inside it is gone. That leads us to the third concept.
 
-Containers are **throwaway by default** — when you stop and remove one, any data it wrote is gone. Volumes are folders on your actual machine that get mounted *into* the container, so data survives restarts.
+### Volume — saving data outside the container
 
-This is critical for PostgreSQL: without a volume, your entire database would be wiped every time you restart Docker.
+Since containers are throwaway, you need a way to preserve data that should survive. A **volume** is a folder on your actual laptop that gets "mounted" into the container — meaning the container can read and write to it, but the data lives on your machine, not inside the container.
+
+This is critical for PostgreSQL. Without a volume, every time you restart your Docker setup, your entire database would be wiped. With a volume, the database files live on your laptop and the container just reads them from there.
+
+```
+Your laptop: ./postgres_data/    ←→    /var/lib/postgresql/data  (inside container)
+```
 
 ---
 
-## The Dockerfile
+## The Dockerfile — building your own image
 
-A Dockerfile is a plain text file of instructions that tells Docker how to build your image, line by line. Every line creates a **layer**.
+A Dockerfile is a plain text file with a list of instructions. Docker reads it top to bottom and executes each instruction to build your image. Every instruction adds a **layer** on top of the previous one.
+
+Here's what each line does:
 
 ```dockerfile
 FROM python:3.10-slim
 ```
-Start from an existing base image — Python 3.10 on a minimal Linux install. You never build from absolute scratch; you always extend something that already exists.
+
+You always start by extending an existing image. Here you're taking the official Python 3.10 image (which already has Python installed on a minimal Linux system) and building on top of it. You never start from absolute scratch.
 
 ```dockerfile
 WORKDIR /app
 ```
-Set `/app` as the working directory inside the container. All following commands run from here, and your files will land here.
+
+This sets the working directory *inside the container* to `/app`. All the commands that follow will run from this directory, and files you copy in will land here. It's the equivalent of `cd /app` — but it also creates the folder if it doesn't exist.
 
 ```dockerfile
 COPY requirements.txt .
 ```
-Copy `requirements.txt` from your laptop into the container's `/app` folder. The dot means "current directory" (which is `/app` due to `WORKDIR`).
+
+This copies `requirements.txt` from your laptop into the container at `/app/requirements.txt`. The `.` means "the current directory inside the container", which is `/app` because of `WORKDIR`. Only `requirements.txt` is copied at this point — not your Python scripts.
 
 ```dockerfile
 RUN pip install -r requirements.txt
 ```
-`RUN` executes a shell command **during the build phase** — this installs all your Python packages into the image so they're permanently baked in.
+
+`RUN` executes a command during the *build* phase — while the image is being created. This installs all your packages into the image so they're permanently baked in.
 
 ```dockerfile
 COPY . .
 ```
-Copy everything else (your Python scripts) into the container.
+
+Now copy everything else — your Python scripts and any other files — into the container.
 
 ```dockerfile
 CMD ["python", "video_stats.py"]
 ```
-`CMD` is the default command that runs **when the container starts**. This is the run phase, not the build phase.
 
-### Key distinction
+`CMD` is the command that runs when the *container starts*. This is different from `RUN` — `RUN` happens once at build time, `CMD` happens every time someone runs the container.
 
-| Instruction | When it runs | Purpose |
-|---|---|---|
-| `RUN` | Once, at build time | Install packages, set up the environment |
-| `CMD` | Every time the container starts | Start your actual application |
+**Why does the order matter?**
 
-### Layer caching
-
-Docker caches each layer. If you change only your Python script and rebuild, Docker reuses the cached pip install layer and only re-runs the `COPY . .` step. This is why `COPY requirements.txt` comes *before* `COPY . .` — you want the slow pip install to be cached unless the requirements actually change.
+Notice that `requirements.txt` is copied and packages are installed *before* the rest of the code is copied. This is deliberate. Docker caches each layer — if nothing changed in that layer, it reuses the cache instead of re-running it. Since your Python scripts change far more often than your requirements, you want the slow `pip install` to be cached. If you changed the order and put `COPY . .` first, Docker would re-run pip install on every single code change.
 
 ---
 
-## Building the Image
+## Building the image
+
+Once you have a Dockerfile, you build the image with:
 
 ```bash
 docker build -t youtube-pipeline .
 ```
 
-- `build` — reads the Dockerfile and creates an image
-- `-t youtube-pipeline` — tags (names) the image so you can refer to it later
-- `.` — look for the Dockerfile in the current directory
+- `build` — tells Docker to read the Dockerfile and create an image
+- `-t youtube-pipeline` — gives the image a name (tag) so you can refer to it later
+- `.` — "look for the Dockerfile in the current directory"
+
+You only need to rebuild when the Dockerfile changes, or when `requirements.txt` changes. Changing your Python scripts alone doesn't require a rebuild — unless you're copying them with `COPY . .` at build time, in which case yes, you'd rebuild.
 
 ---
 
-## Airflow Architecture
+## Airflow is not one thing — it's four
 
-Airflow is not a single program — it is four separate processes that must all run at the same time and communicate with each other:
+Before we talk about Docker Compose, you need to understand why we need it. The reason is Airflow.
 
-| Component | What it does |
-|---|---|
-| **Webserver** | The browser UI you open at `http://localhost:8080` |
-| **Scheduler** | Watches your DAGs and decides when to trigger them |
-| **Worker** | Actually executes the tasks inside a triggered DAG |
-| **Metadata Database** | A PostgreSQL database where Airflow stores DAG run history and task state |
+Most software you run is a single process. Airflow is not. To function, Airflow requires **four separate processes running at the same time**, all communicating with each other:
 
-Running all four manually on your laptop would be painful. Docker Compose handles all of them together with a single command.
+**The Webserver** is what you open in your browser at `http://localhost:8080`. It shows you the UI — your DAGs, their status, task logs. That's all it does.
 
----
+**The Scheduler** is a background process that watches your DAG files and decides when to trigger runs. If your DAG is set to run daily at midnight, the Scheduler is what notices when midnight arrives and fires it off.
 
-## Airflow Directories
+**The Worker** is what actually *executes* the tasks. When the Scheduler says "run this task now", it hands it to a Worker. The Worker is where your Python code actually runs.
 
-When Airflow runs inside Docker, it expects certain folders to exist and be mounted from your laptop:
+**The Metadata Database** is a PostgreSQL database that ties it all together. The Scheduler writes "task triggered" to it. The Worker writes "task completed" to it. The Webserver reads from it to show you the UI. Without this database, none of the components know what the others are doing.
 
-| Folder | Purpose |
-|---|---|
-| `dags/` | Your DAG Python files — Airflow watches this folder for pipelines |
-| `logs/` | Task execution logs written by the worker |
-| `plugins/` | Custom Airflow operators or hooks (optional) |
-
-These are mounted as volumes so you can edit DAGs on your laptop and Airflow sees the changes instantly without rebuilding anything.
+So to run Airflow, you need four processes plus a database running simultaneously and able to talk to each other. Doing that manually on your laptop would be a nightmare. That's exactly what `docker-compose.yaml` handles.
 
 ---
 
-## The `.env` File with Docker
+## docker-compose.yaml — running everything together
 
-Your `.env` file works with Docker Compose the same way it works with Python — Docker Compose reads it automatically and makes every variable available inside `docker-compose.yaml` using `${VARIABLE_NAME}`:
+If a Dockerfile defines *one* container, `docker-compose.yaml` defines an entire **stack of containers** and wires them together. You run the whole thing with one command.
 
-```yaml
-environment:
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-```
-
-This keeps secrets out of both your Python code and your Docker config. Never hardcode passwords in `docker-compose.yaml`.
-
----
-
-## docker-compose.yaml
-
-If a Dockerfile defines *one* container, `docker-compose.yaml` defines **multiple containers and how they connect**. Your pipeline needs:
-
-1. Airflow Webserver
-2. Airflow Scheduler
-3. Airflow Worker
-4. Airflow Metadata Database (PostgreSQL)
-5. Your YouTube data warehouse (a second PostgreSQL database)
-
-Here is an annotated example of what the file looks like:
+Here's an annotated version of what the file looks like for this project:
 
 ```yaml
 services:
 
-  postgres:                              # your data warehouse container
-    image: postgres:14                   # use the official Postgres image, no Dockerfile needed
+  postgres:
+    image: postgres:14               # use the official Postgres 14 image
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data   # persist the DB on your machine
+      - postgres_data:/var/lib/postgresql/data   # ← persist the database here
+
 
   airflow-webserver:
     image: apache/airflow:2.9.2
     depends_on:
-      - postgres                         # don't start until postgres is running
+      - postgres                     # ← don't start until postgres is up
     ports:
-      - "8080:8080"                      # map container port 8080 to your laptop port 8080
+      - "8080:8080"                  # ← your browser → inside the container
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://user:pass@postgres/airflow
     volumes:
-      - ./dags:/opt/airflow/dags         # your DAG files on laptop → inside container
+      - ./dags:/opt/airflow/dags     # ← your DAG files, live-synced
+
 
   airflow-scheduler:
     image: apache/airflow:2.9.2
     depends_on:
       - postgres
 
+
 volumes:
-  postgres_data:                         # declare the named volume so Docker manages it
+  postgres_data:
 ```
 
-### Three concepts to understand
+Let's break down the three things in here that people find confusing:
 
 **`ports: "8080:8080"`**
-Format is `host_port:container_port`. The container lives on its own internal network — this line punches a hole so your browser on your laptop can reach it.
+
+The format is `your_laptop_port:container_port`. The container lives on its own private network and can't be reached from your browser by default. This line punches a hole — requests to port 8080 on your laptop get forwarded into the container's port 8080. That's how you open `localhost:8080` and see the Airflow UI.
 
 **`volumes: ./dags:/opt/airflow/dags`**
-Format is `host_path:container_path`. Your local `./dags` folder is mounted inside the container at `/opt/airflow/dags`. Edit a file on your laptop → Airflow sees it immediately.
 
-**`depends_on`**
-Controls startup order. The webserver won't start until Postgres is ready, because Airflow needs its metadata database to exist before it can boot.
+The format is `your_laptop_path:container_path`. Your local `./dags` folder and the container's `/opt/airflow/dags` folder are now the same folder — a live, two-way sync. You create or edit a DAG file on your laptop, and Airflow sees it instantly without any rebuild or restart. This is one of the most powerful things about volumes.
+
+**`depends_on: postgres`**
+
+Controls startup order. The webserver cannot start without the metadata database, because it needs to connect to it immediately on boot. `depends_on` makes Docker wait for Postgres to be ready before starting the webserver.
 
 ---
 
-## init-multiple-databases.sh
+## The `.env` file with Docker Compose
 
-By default, a PostgreSQL container creates one database. Your project needs two:
-1. `airflow` — for Airflow's internal metadata (task history, connections, variables)
-2. `youtube_db` — your actual YouTube data warehouse
+Your `.env` file works with Docker Compose the same way it works with Python — Docker Compose reads it automatically. Any variable in `.env` can be referenced in `docker-compose.yaml` using `${VARIABLE_NAME}`:
 
-This shell script runs automatically when the PostgreSQL container first starts and creates both databases. You mount it into a special folder that Postgres watches on boot:
+```yaml
+environment:
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+```
+
+This is important. Never hardcode passwords directly in `docker-compose.yaml`. That file gets committed to git. Your `.env` file does not — it's in `.gitignore`.
+
+---
+
+## `init-multiple-databases.sh` — setting up two databases
+
+Here's something that trips people up. By default, a PostgreSQL container creates exactly one database. Your project needs two:
+
+1. `airflow` — Airflow's internal database where it stores task history, connections, and variables
+2. `youtube_db` — your actual data warehouse where the pipeline data lands
+
+PostgreSQL has a built-in trick for this. If you place a shell script in `/docker-entrypoint-initdb.d/`, Postgres runs it automatically on **first boot**, before accepting connections. So you write a script that creates both databases, and mount it into that folder:
 
 ```yaml
 volumes:
   - ./init-multiple-databases.sh:/docker-entrypoint-initdb.d/init.sh
 ```
 
-Postgres automatically runs any `.sh` or `.sql` file it finds in `/docker-entrypoint-initdb.d/` on first boot. This only runs once — if the data volume already exists, Postgres skips it.
+One important thing to know: this only runs on the very first startup — when the data volume is being created for the first time. If you've already started Postgres and the data volume exists, it won't run again. To reset and re-run it, you'd need to delete the volume with `docker-compose down -v`.
 
 ---
 
-## Essential Docker Commands
+## Docker commands you'll use every day
 
-### Starting and stopping
+**Starting the stack:**
 
 ```bash
-# Start everything defined in docker-compose.yaml (runs in background)
 docker-compose up -d
+```
 
-# Stop all containers but keep your volumes and data intact
+The `-d` flag means "detached" — it runs everything in the background so your terminal stays free. Without `-d`, the logs from all containers would stream into your terminal and you couldn't type anything else.
+
+**Stopping the stack:**
+
+```bash
 docker-compose down
+```
 
-# Stop AND delete volumes — this wipes your database completely
+This stops all the containers but keeps your volumes intact — your database data is preserved.
+
+**If you want to wipe everything and start fresh:**
+
+```bash
 docker-compose down -v
 ```
 
-> Always run `docker-compose down` before shutting your laptop. If you just close the lid, containers freeze mid-state and can corrupt the Postgres data files.
+The `-v` flag deletes volumes too. This destroys your database. Only use this when you genuinely want a clean slate.
 
-### Checking status and logs
+**Seeing what's running:**
 
 ```bash
-# See which containers are currently running
 docker ps
-
-# See logs for one service
-docker-compose logs airflow-webserver
-
-# Follow logs in real time (Ctrl+C to stop)
-docker-compose logs -f airflow-scheduler
 ```
 
-### Entering a container
+Shows every running container — its name, the image it's running, how long it's been up, and which ports are exposed.
+
+**Reading logs:**
 
 ```bash
-# Open a bash shell inside a running container
+docker-compose logs airflow-scheduler        # all logs so far
+docker-compose logs -f airflow-scheduler     # follow in real time (Ctrl+C to stop)
+```
+
+Logs are how you debug. When something isn't working, this is the first place to look.
+
+**Getting inside a container:**
+
+```bash
 docker exec -it <container_name> bash
-
-# Example: get a psql prompt inside the postgres container
-docker exec -it postgres psql -U admin -d youtube_db
 ```
 
-### Rebuilding after changes
+This opens a terminal *inside* the running container. It's like SSH-ing into the container's Linux environment. Useful when you want to poke around, check file paths, or run a command manually.
+
+**After you change the Dockerfile or `requirements.txt`:**
 
 ```bash
-# Rebuild images if you changed the Dockerfile or requirements.txt
 docker-compose up -d --build
 ```
 
+The `--build` flag tells Docker to rebuild the images before starting. Without it, Docker reuses the old cached images even if you changed the Dockerfile.
+
 ---
 
-## Mental Model
+## The one habit to build right now
+
+Always run `docker-compose down` before you close your laptop.
+
+If you just close the lid while containers are running, they get suspended mid-operation. PostgreSQL in particular can end up with partially-written files that get corrupted. When you open your laptop again and try to start Docker, Postgres might refuse to start because the data files are in a bad state.
+
+One command before you stop working, every time.
+
+---
+
+## How it all fits together
+
+Here's the full picture:
 
 ```
 Your Laptop
 │
-├── Dockerfile                  defines your custom Python extraction image
-├── docker-compose.yaml         defines the full stack (all containers)
-├── .env                        secrets — read by Python AND Docker Compose
-├── dags/                       mounted into the Airflow containers
-├── logs/                       written by the Airflow worker
+├── Dockerfile               → builds your Python extraction image
+├── docker-compose.yaml      → defines and wires together the full stack
+├── .env                     → secrets, read by both Python and Docker Compose
+├── dags/                    → mounted live into the Airflow containers
+├── logs/                    → written by the Airflow worker
 │
-└── Docker Engine (running silently in the background)
+└── Docker Engine (running in the background on your machine)
     │
-    ├── Container: postgres            ← data warehouse + Airflow metadata DB
-    ├── Container: airflow-webserver   ← UI at http://localhost:8080
-    ├── Container: airflow-scheduler   ← triggers DAG runs on schedule
-    └── Container: airflow-worker      ← runs the actual tasks
+    ├── Container: postgres
+    │     └── stores Airflow metadata + your YouTube data warehouse
+    │
+    ├── Container: airflow-webserver
+    │     └── serves the UI at http://localhost:8080
+    │
+    ├── Container: airflow-scheduler
+    │     └── watches DAGs, triggers runs on schedule
+    │
+    └── Container: airflow-worker
+          └── actually runs the tasks in your DAGs
 ```
 
-All containers share a **virtual network** that Compose creates automatically. They talk to each other by service name — for example, the Airflow webserver connects to `postgres:5432` using the service name `postgres`, not an IP address.
+All containers share a private **virtual network** that Docker Compose creates automatically. This is why the Airflow webserver can connect to Postgres by just using the hostname `postgres` — Docker resolves that name to the right container automatically. You don't need to deal with IP addresses.
 
 ---
 
-## Section 3 Checklist
+## Before you move on — check these off
 
-- [ ] Understand why Docker exists and what problem it solves
-- [ ] Know the difference between an image and a container
-- [ ] Know what a volume is and why it matters for Postgres
-- [ ] Read and understand every line of the Dockerfile
-- [ ] Run `docker build` to build the image
-- [ ] Understand the four Airflow components and why each exists
-- [ ] Read and understand the `docker-compose.yaml`
-- [ ] Run `docker-compose up -d` and verify all containers start
-- [ ] Open `http://localhost:8080` and log into the Airflow UI
-- [ ] Practice the core docker commands (`ps`, `logs`, `exec`, `down`)
-- [ ] Run `docker-compose down` before closing your laptop
+- [ ] You understand *why* Docker exists (the "works on my machine" problem)
+- [ ] You know the difference between an image and a container
+- [ ] You know what a volume is and why Postgres needs one
+- [ ] You can read every line of the Dockerfile and explain what it does
+- [ ] You know why `COPY requirements.txt` comes before `COPY . .`
+- [ ] You understand that Airflow is four separate processes, not one
+- [ ] You can read the `docker-compose.yaml` and explain `ports`, `volumes`, and `depends_on`
+- [ ] You understand why `init-multiple-databases.sh` exists and when it runs
+- [ ] You can run `docker-compose up -d` and see all containers start
+- [ ] You can open `http://localhost:8080` and log into the Airflow UI
+- [ ] You know to run `docker-compose down` before closing your laptop

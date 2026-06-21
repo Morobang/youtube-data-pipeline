@@ -1,47 +1,90 @@
 # Section 2: Data Extraction Using the API
 
-This section explains exactly what `video_stats.py` does, step by step.
+## What we're doing in this section
+
+The first step of the pipeline is getting data out of YouTube. That's what `video_stats.py` does. By the end of this section you'll understand every single line in that file — not just *what* it does, but *why* it does it that way.
+
+Let's start from the very beginning.
 
 ---
 
-## What Is an API?
+## What is an API and why do we need one?
 
-An **API** (Application Programming Interface) is a way for two programs to talk to each other. YouTube has an API that lets you ask it questions like:
+You might think: "why can't I just go to a YouTube channel page, copy the data, and save it?" The short answer is — you can, once. But you can't automate it, because YouTube's website is designed for humans in browsers, not for Python scripts. The layout changes, things load dynamically with JavaScript, and YouTube actively blocks programs that try to scrape it.
 
-- "What videos does this channel have?"
-- "How many views does this video have?"
+An **API** (Application Programming Interface) is YouTube's official, supported way for programs to request data. Instead of a webpage, you get clean, structured data in a format your code can easily work with.
 
-You ask by sending an **HTTP request** to a URL (like visiting a website, but the response is structured data instead of a webpage). YouTube sends back a **JSON response** — a structured block of text that Python can read and work with.
-
-To use the YouTube API you need an **API key** — a unique token that identifies you. Without it, YouTube won't respond. Your key lives in the `.env` file and is never written directly in the code.
+Here's the mental model: think of the API as a restaurant menu. You don't walk into the kitchen and grab food yourself — you order from the menu, the kitchen prepares it, and it comes back in a predictable format. The API is the menu. Your code is the customer placing the order.
 
 ---
 
-## How the Script Works — The Big Picture
+## How an API request actually works
+
+When your Python script calls the YouTube API, this is what happens:
+
+1. Your script builds a URL — a web address with your question embedded in it
+2. The `requests` library sends that URL as an HTTP request (the same kind your browser sends when you visit a website)
+3. YouTube's servers receive it, check your API key, fetch the data, and send back a response
+4. The response comes back as **JSON** — a structured text format that looks like a Python dictionary
+
+The whole thing happens in milliseconds. From your code's perspective it's just: send a URL, get back a dictionary.
+
+---
+
+## The API key — and why it lives in `.env`
+
+Every request you send to YouTube must include your **API key** — a unique string that proves you're an authorised user. YouTube uses this to track usage and enforce limits (you get a certain number of requests per day for free).
+
+Here's where beginners often make a mistake: they write the key directly in the code.
+
+```python
+# DON'T DO THIS
+api_key = "AIzaSyD_abc123yourrealkey"
+```
+
+If you push that to GitHub, your key is now public. Anyone can find it, use it, and burn through your daily quota. That's why your `.env` file exists:
+
+```bash
+# .env  (never committed to git)
+API_KEY=AIzaSyD_abc123yourrealkey
+```
+
+And in your code:
+
+```python
+from dotenv import load_dotenv
+load_dotenv()
+api_key = os.getenv("API_KEY")
+```
+
+`load_dotenv()` reads the `.env` file and puts each variable into the environment. `os.getenv("API_KEY")` reads it back. Your key never appears in any file that gets committed.
+
+---
+
+## The flow of `video_stats.py`
+
+The script runs four functions in sequence. Each one feeds its result into the next:
 
 ```
-video_stats.py runs
-        |
-        v
-1. get_playlist_id()    — asks YouTube: "what is the ID of this channel's uploads playlist?"
-        |
-        v
-2. get_video_ids()      — asks YouTube: "give me every video ID in that playlist"
-        |
-        v
-3. extract_video_data() — asks YouTube: "give me full details for all those video IDs"
-        |
-        v
-4. save_to_json()       — writes all that data to a JSON file in ./data/
+get_playlist_id()
+      ↓ returns a playlist ID
+get_video_ids(playlist_id)
+      ↓ returns a list of video IDs
+extract_video_data(video_ids)
+      ↓ returns a list of video dictionaries
+save_to_json(video_data)
+      ↓ saves to ./data/youtube_data_2026-06-21.json
 ```
+
+Let's go through each one.
 
 ---
 
-## Step 1 — `get_playlist_id()`
+## `get_playlist_id()` — finding where the videos live
 
-**The problem:** The YouTube API doesn't let you ask "give me all videos from channel X" directly. Instead, every channel has a hidden **uploads playlist** — a playlist that automatically contains every public video the channel has ever posted. To get the videos, you first need to find that playlist's ID.
+You might expect the YouTube API to let you say "give me all videos from channel X." But it doesn't work that way. Internally, every YouTube channel has a hidden **uploads playlist** — a playlist that automatically contains every public video the channel has ever posted. The API makes you go through the playlist to get to the videos.
 
-**What it does:**
+So the first step is to find that playlist's ID.
 
 ```python
 url = (
@@ -53,12 +96,17 @@ data = response.json()
 playlist_id = data['items'][0]['contentDetails']['relatedPlaylists']['uploads']
 ```
 
-- It builds a URL using your `channel_handle` (e.g. `@mkbhd`) and `api_key`
-- `requests.get(url)` sends the request and gets back a response
-- `.json()` turns the raw text response into a Python dictionary
-- It digs into the dictionary to find the playlist ID at the path `items[0] > contentDetails > relatedPlaylists > uploads`
+Break it down piece by piece:
 
-**What a response looks like (simplified):**
+**The URL** is a question written in a format the API understands. The `?` starts the query parameters. `part=contentDetails` says "I want the contentDetails section of the response". `forHandle=@channelname` says which channel. `key=` is your credentials.
+
+**`requests.get(url)`** sends the request. Think of it as your code opening a browser tab, going to that URL, and getting the response — except it happens in code, not a browser.
+
+**`.json()`** converts the raw text response into a Python dictionary. Without this you'd just have a long string of characters you can't navigate.
+
+**The deep access** — `data['items'][0]['contentDetails']['relatedPlaylists']['uploads']` — is navigating the nested dictionary. The API response is a JSON object with a specific structure, and you're drilling down to find the uploads playlist ID inside it.
+
+What does the response actually look like? Simplified, it's this:
 
 ```json
 {
@@ -74,22 +122,21 @@ playlist_id = data['items'][0]['contentDetails']['relatedPlaylists']['uploads']
 }
 ```
 
-The playlist ID always starts with `UU`.
+The playlist ID always starts with `UU`. That's what gets returned and passed to the next function.
 
 ---
 
-## Step 2 — `get_video_ids(playlist_id)`
+## `get_video_ids(playlist_id)` — the pagination problem
 
-**The problem:** A channel might have hundreds or thousands of videos. The YouTube API will only return a maximum of 50 at a time. To get all of them you have to ask repeatedly, moving to the next "page" each time.
+Now that you have the playlist ID, you want all the video IDs in it. But here's the catch: the YouTube API will only give you **50 videos at a time**. If a channel has 300 videos, you need to make 6 separate requests and stitch the results together.
 
-**What it does:**
+The API handles this with **pagination**. After each response, if there are more results, the API includes a `nextPageToken` in the response. To get the next page, you include that token in your next request. When there's no more token, you're done.
+
+Here's how the code handles this:
 
 ```python
+video_ids = []
 page_token = None
-base_url = (
-    f"https://youtube.googleapis.com/youtube/v3/playlistItems"
-    f"?part=contentDetails&maxResults={max_results}&playlistId={playlist_id}&key={api_key}"
-)
 
 while True:
     url = base_url
@@ -100,32 +147,41 @@ while True:
     data = response.json()
 
     for item in data.get('items', []):
-        video_ids.append(item['contentDetails'].get('videoId'))
+        video_id = item['contentDetails'].get('videoId')
+        if video_id:
+            video_ids.append(video_id)
 
     page_token = data.get('nextPageToken')
     if not page_token:
         break
 ```
 
-- It starts with `page_token = None` (the first request has no token)
-- After each response, it checks if the API sent back a `nextPageToken`
-- If yes — there are more pages — it adds the token to the next request URL and loops again
-- If no — all videos have been collected — the loop breaks
-- It collects just the video IDs (e.g. `"dQw4w9WgXcQ"`) from each page
+Walk through the logic:
+- Start with `page_token = None` — the first request doesn't have one
+- Enter an infinite `while True` loop — we don't know how many pages there are upfront
+- Build the URL, and if we have a token from a previous response, attach it
+- After getting the response, collect all video IDs from this page
+- Check if the response has a `nextPageToken`
+- If yes — there's another page — save the token and loop again
+- If no — we've got everything — break out of the loop
 
-**Pagination visualised:**
+Visualised:
 
 ```
-Request 1 (no token)  →  returns videos 1–50   + nextPageToken: "abc123"
-Request 2 (token=abc123) →  returns videos 51–100  + nextPageToken: "def456"
-Request 3 (token=def456) →  returns videos 101–130 + no nextPageToken → stop
+Request 1 (no token)     → videos 1–50   + nextPageToken: "CAoQAA"
+Request 2 (CAoQAA)       → videos 51–100 + nextPageToken: "CAoQAB"
+Request 3 (CAoQAB)       → videos 101–130 + no nextPageToken → stop
 ```
+
+At the end, `video_ids` is a flat list of every video ID on the channel — could be 50, could be 500.
 
 ---
 
-## Step 3 — `_batch(items, batch_size)`
+## `_batch()` — why we need to chunk the IDs
 
-This is a small helper function. The YouTube Videos API has a limit: you can only ask for details on **50 videos at a time**. If you have 300 video IDs you need to split them into 6 groups of 50 and make 6 separate requests.
+Now you have all the video IDs but you need the actual stats for each video. The YouTube Videos API can look up multiple IDs in one request — but only up to **50 at a time**. So again, you need to split your list into chunks.
+
+That's all `_batch()` does:
 
 ```python
 def _batch(items, batch_size):
@@ -133,24 +189,26 @@ def _batch(items, batch_size):
         yield items[i:i + batch_size]
 ```
 
-`yield` makes this a **generator** — instead of building the whole list at once and returning it, it produces one chunk at a time as you loop over it. This is memory-efficient.
+The `yield` keyword makes this a **generator**. Instead of building the whole list of chunks and returning it at once, it hands you one chunk at a time as you loop over it. This is a small memory optimisation — you never have all chunks sitting in memory simultaneously.
 
-**Example:**
+Here's the output if you were to collect it into a list:
 
 ```python
-list(_batch([1, 2, 3, 4, 5], 2))
-# → [[1, 2], [3, 4], [5]]
+list(_batch(['a', 'b', 'c', 'd', 'e'], 2))
+# → [['a', 'b'], ['c', 'd'], ['e']]
 ```
+
+The last chunk is smaller if the list doesn't divide evenly — that's fine, the API handles it.
 
 ---
 
-## Step 4 — `extract_video_data(video_ids)`
+## `extract_video_data(video_ids)` — getting the actual stats
 
-**What it does:** For each batch of up to 50 video IDs, it calls the YouTube Videos API to get full details, then flattens those details into a list of dictionaries.
+This is where you get the data you actually care about: titles, view counts, durations, like counts. For each batch of up to 50 video IDs, you make one API call that returns full details for all of them.
 
 ```python
 for batch in _batch(video_ids, max_results):
-    ids = ",".join(batch)                   # "id1,id2,id3,..."
+    ids = ",".join(batch)
     url = (
         f"https://youtube.googleapis.com/youtube/v3/videos"
         f"?part=contentDetails&part=snippet&part=statistics&id={ids}&key={api_key}"
@@ -171,38 +229,46 @@ for batch in _batch(video_ids, max_results):
         extracted_data.append(video_data)
 ```
 
-**The three `part` parameters explained:**
+A few things worth understanding here:
 
-The YouTube API lets you request different "parts" of a video's data. You only pay quota costs for what you request:
+**`",".join(batch)`** turns a list like `['abc', 'def', 'xyz']` into the string `"abc,def,xyz"`. The API accepts multiple IDs as a comma-separated list in the URL.
 
-| Part | What's inside |
-|---|---|
-| `snippet` | Title, description, publish date, channel name, thumbnail URLs |
-| `contentDetails` | Duration (in ISO 8601 format, e.g. `PT5M30S` = 5 minutes 30 seconds) |
-| `statistics` | View count, like count, comment count |
+**The `part` parameters** tell the API which sections of data to include. The YouTube Videos API splits video data into sections, and you only get (and pay quota for) what you ask for:
 
-**What one entry in the output list looks like:**
+- `part=snippet` — gives you title, description, publish date, channel name
+- `part=contentDetails` — gives you duration (as `"PT5M30S"` — you'll convert this in Silver)
+- `part=statistics` — gives you view count, like count, comment count
+
+**`.get('viewCount')`** is used instead of `['viewCount']` because statistics can sometimes be missing — for example, a channel owner can disable like counts. `.get()` returns `None` instead of crashing.
+
+The result after looping through all batches is a list of dictionaries — one per video — that looks like this:
 
 ```json
-{
-  "video_id": "dQw4w9WgXcQ",
-  "title": "Rick Astley - Never Gonna Give You Up",
-  "published_at": "2009-10-25T06:57:33Z",
-  "duration": "PT3M33S",
-  "view_count": "1400000000",
-  "like_count": "16000000",
-  "comment_count": "2000000"
-}
+[
+  {
+    "video_id": "dQw4w9WgXcQ",
+    "title": "Rick Astley - Never Gonna Give You Up",
+    "published_at": "2009-10-25T06:57:33Z",
+    "duration": "PT3M33S",
+    "view_count": "1400000000",
+    "like_count": "16000000",
+    "comment_count": "2000000"
+  },
+  ...
+]
 ```
+
+Notice that `view_count` is a string (`"1400000000"`), not a number. That's how the YouTube API returns it. Turning it into an actual integer is a Silver layer job.
 
 ---
 
-## Step 5 — `save_to_json(data)`
+## `save_to_json(data)` — landing the data
 
-**What it does:** Writes the list of video dictionaries to a `.json` file in the `./data/` folder. The filename includes today's date so every run creates a new file instead of overwriting yesterday's.
+The last step is writing everything to a file. This is the Bronze layer — raw data saved exactly as it came from the API.
 
 ```python
-os.makedirs("./data", exist_ok=True)      # create ./data/ if it doesn't exist
+os.makedirs("./data", exist_ok=True)
+
 filename = f"youtube_data_{date.today()}.json"
 file_path = f"./data/{filename}"
 
@@ -210,41 +276,44 @@ with open(file_path, 'w', encoding='utf-8') as json_outfile:
     json.dump(data, json_outfile, indent=4, ensure_ascii=False)
 ```
 
-- `os.makedirs(..., exist_ok=True)` — creates the folder; `exist_ok=True` means it won't crash if the folder already exists
-- `json.dump(..., indent=4)` — writes the JSON with 4-space indentation so it's human-readable
-- `ensure_ascii=False` — preserves non-English characters (e.g. Korean, Arabic video titles) instead of converting them to escape sequences
+**`os.makedirs("./data", exist_ok=True)`** — creates the `data/` folder if it doesn't exist. The `exist_ok=True` part means it won't throw an error if the folder is already there. Without it, the second time you run the script it would crash.
 
-**Example output filename:** `./data/youtube_data_2026-06-20.json`
+**The date in the filename** (`youtube_data_2026-06-21.json`) means every daily run creates a new file instead of overwriting yesterday's. This keeps a history of snapshots.
+
+**`indent=4`** makes the JSON human-readable — without it, the entire file would be one long line that's impossible to read.
+
+**`ensure_ascii=False`** means characters outside of standard English — Korean titles, Arabic, emoji — get written as-is instead of being converted into ugly escape sequences like `😀`.
 
 ---
 
-## Error Handling
+## Error handling — what happens when something goes wrong
 
-Both API-calling functions wrap their code in `try/except` blocks:
+Both API functions wrap their code in `try/except` blocks. Here's why that matters.
+
+When you make an HTTP request, things can fail silently. If the YouTube API returns a 429 error (rate limit exceeded) or a 403 (invalid API key), `requests` by default doesn't raise an exception — it just gives you the error response and moves on. Your code would then try to access `data['items']` on an error response and crash in a confusing way.
+
+`response.raise_for_status()` fixes this. It checks the HTTP status code and raises a proper Python exception if it's anything other than a 200 success. Now you get a clear error immediately instead of a mysterious crash three lines later.
 
 ```python
 try:
     response = requests.get(url)
-    response.raise_for_status()   # raises an exception for 4xx/5xx HTTP errors
+    response.raise_for_status()
     ...
-except (KeyError, IndexError) as e:
-    print(f"Unexpected API response structure: {e}")
-    raise
 except requests.exceptions.RequestException as e:
     print(f"HTTP request failed: {e}")
     raise
 ```
 
-- `raise_for_status()` turns a silent HTTP 404 or 500 into a Python exception so the failure is obvious rather than hidden
-- The `except` blocks print a helpful message and then re-raise the error so the program stops cleanly instead of continuing with bad data
+The `raise` at the end re-raises the exception after printing the message. This stops the program cleanly rather than letting it continue with incomplete or corrupted data.
 
 ---
 
-## Running the Script
+## Running the script
+
+Make sure your `.env` has `API_KEY` and `CHANNEL_HANDLE` set, then:
 
 ```bash
-# Make sure your .env file has API_KEY and CHANNEL_HANDLE set, then:
 python video_stats.py
 ```
 
-The script will print progress to the terminal and save a JSON file to `./data/`.
+You'll see the playlist ID printed in the terminal, and a new JSON file will appear in `./data/` when it finishes.
