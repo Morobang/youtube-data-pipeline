@@ -1,8 +1,4 @@
 import logging
-import pendulum
-from datetime import timedelta, datetime
-
-from airflow import DAG
 from airflow.decorators import task
 
 from datawarehouse.data_utils import get_conn_cursor, close_conn_cursor, create_schema, create_table, get_video_ids
@@ -13,17 +9,6 @@ from datawarehouse.data_transformation import transform_data
 
 logger = logging.getLogger(__name__)
 table = "yt_api"
-local_tz = pendulum.timezone("Africa/Johannesburg")
-
-default_args = {
-    'owner': 'dataengineers',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-    'start_date': datetime(2024, 6, 1, tzinfo=local_tz),
-}
 
 
 @task
@@ -121,17 +106,3 @@ def core_table():
             close_conn_cursor(conn, cursor)
 
 
-with DAG(
-    dag_id='load_and_transform',
-    default_args=default_args,
-    description='Load JSON into bronze, transform and load into core',
-    schedule='30 14 * * *',  # 30 min after extraction DAG at 14:00
-    catchup=False,
-    max_active_runs=1,
-    dagrun_timeout=timedelta(hours=1),
-) as dag:
-
-    bronze = staging_table()
-    core   = core_table()
-
-    bronze >> core
