@@ -5,7 +5,7 @@ import pendulum
 
 from api.video_stats import get_playlist_id, get_video_ids, extract_video_data, save_to_json
 from datawarehouse.dwh import staging_table, core_table
-# from dataquality.soda import yt_elt_data_quality  # uncomment in Section 6
+from dataquality.soda import yt_elt_data_quality
 
 
 local_tz = pendulum.timezone("Africa/Johannesburg")
@@ -61,10 +61,26 @@ with DAG(
     update_staging = staging_table()
     update_core    = core_table()
 
-    # trigger_data_quality = TriggerDagRunOperator(
-    #     task_id='trigger_data_quality',
-    #     trigger_dag_id='data_quality',
-    # )
+    trigger_data_quality = TriggerDagRunOperator(
+        task_id='trigger_data_quality',
+        trigger_dag_id='data_quality',
+    )
 
     update_staging >> update_core
-    # update_core >> trigger_data_quality  # uncomment in Section 6
+    update_core >> trigger_data_quality  # uncomment in Section 6
+
+
+# DAG 3: data_quality
+with DAG(
+    dag_id="data_quality",
+    default_args=default_args,
+    description="DAG to check the data quality on both layers in the database",
+    catchup=False,
+    schedule=None,
+) as dag_quality:
+
+    soda_validate_staging = yt_elt_data_quality('bronze')
+    soda_validate_core = yt_elt_data_quality('core')
+
+    # Define dependencies
+    soda_validate_staging >> soda_validate_core
